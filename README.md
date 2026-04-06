@@ -11,14 +11,28 @@
 
 [![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/tufantunc/ssh-mcp)](https://archestra.ai/mcp-catalog/tufantunc__ssh-mcp)
 
-**SSH MCP Server** is a local Model Context Protocol (MCP) server that exposes SSH control for Linux and Windows systems, enabling LLMs and other MCP clients to execute shell commands securely via SSH.
+**SSH MCP Server** is a Model Context Protocol (MCP) server that exposes SSH control for Linux and Windows systems, enabling LLMs and other MCP clients to execute shell commands securely via SSH.
+
+Two transport modes are available:
+
+| Mode | Transport | Use case |
+|------|-----------|----------|
+| **Stdio** (classic) | stdin/stdout | Single static host — one process per server |
+| **HTTP** (new) | Streamable HTTP `POST /mcp` | Dynamic multi-host — one container for many servers |
 
 ## Contents
 
 - [Quick Start](#quick-start)
 - [Features](#features)
 - [Installation](#installation)
-- [Client Setup](#client-setup)
+- [Stdio Server — Single Host](#stdio-server--single-host)
+  - [Client Setup](#client-setup)
+  - [Claude Code](#claude-code)
+- [HTTP Server — Dynamic Multi-Host](#http-server--dynamic-multi-host)
+  - [Docker Quick Start](#docker-quick-start)
+  - [Tools](#http-tools)
+  - [MCP Client Configuration](#mcp-client-configuration-http)
+  - [Environment Variables](#environment-variables)
 - [Testing](#testing)
 - [Disclaimer](#disclaimer)
 - [Support](#support)
@@ -26,9 +40,10 @@
 ## Quick Start
 
 - [Install](#installation) SSH MCP Server
-- [Configure](#configuration) SSH MCP Server
-- [Set up](#client-setup) your MCP Client (e.g. Claude Desktop, Cursor, etc)
-- Execute remote shell commands on your Linux or Windows server via natural language
+- Choose a transport mode:
+  - **Single host** → [Configure the stdio server](#client-setup) and point your MCP client at it
+  - **Multi-host / containerised** → [Pull and run the Docker image](#docker-quick-start) and point your MCP client at the HTTP endpoint
+- Execute remote shell commands via natural language
 
 ## Features
 
@@ -36,8 +51,42 @@
 - Execute shell commands on remote Linux and Windows systems
 - Secure authentication via password or SSH key
 - Built with TypeScript and the official MCP SDK
+- **Two transport modes** — stdio for single-host setups, HTTP for dynamic multi-host deployments
 - **Configurable timeout protection** with automatic process abortion
-- **Graceful timeout handling** - attempts to kill hanging processes before closing connections
+- **Graceful timeout handling** — attempts to kill hanging processes before closing connections
+- **Docker image** published to GitHub Container Registry (`ghcr.io`) on every release
+
+## Installation
+
+### From npm (stdio server)
+
+```bash
+npx ssh-mcp -- --host=YOUR_HOST --user=YOUR_USER --password=YOUR_PASSWORD
+```
+
+### From source
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/tufantunc/ssh-mcp.git
+   cd ssh-mcp
+   ```
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+### Docker (HTTP server)
+
+```bash
+docker pull ghcr.io/tufantunc/ssh-mcp:latest
+```
+
+---
+
+## Stdio Server — Single Host
+
+The stdio server connects to **one fixed SSH host** at startup. It is ideal for IDE integrations (Cursor, Windsurf, Claude Desktop, etc.) where each project targets a known server.
 
 ### Tools
 
@@ -45,7 +94,6 @@
   - **Parameters:**
     - `command` (required): Shell command to execute on the remote SSH server
     - `description` (optional): Optional description of what this command will do (appended as a comment)
-  - **Timeout Configuration:**
 
 - `sudo-exec`: Execute a shell command with sudo elevation
   - **Parameters:**
@@ -65,19 +113,7 @@
     - Default: `1000`
     - No-limit mode: set `--maxChars=none` or any `<= 0` value (e.g. `--maxChars=0`)
 
-## Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/tufantunc/ssh-mcp.git
-   cd ssh-mcp
-   ```
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-## Client Setup
+### Client Setup
 
 You can configure your IDE or LLM like Cursor, Windsurf, Claude Desktop to use this MCP Server.
 
@@ -95,8 +131,7 @@ You can configure your IDE or LLM like Cursor, Windsurf, Claude Desktop to use t
 - `maxChars`: Maximum allowed characters for the `command` input (default: 1000). Use `none` or `0` to disable the limit.
 - `disableSudo`: Flag to disable the `sudo-exec` tool completely. Useful when sudo access is not needed or not available.
 
-
-```commandline
+```json
 {
     "mcpServers": {
         "ssh-mcp": {
@@ -169,7 +204,6 @@ You can specify the scope when adding the server:
   claude mcp add --transport stdio ssh-mcp --scope user -- npx -y ssh-mcp -- --host=YOUR_HOST --user=YOUR_USER --password=YOUR_PASSWORD
   ```
 
-
 **Verify Installation:**
 
 After adding the server, restart Claude Code and ask Cascade to execute a command:
@@ -178,6 +212,117 @@ After adding the server, restart Claude Code and ask Cascade to execute a comman
 ```
 
 For more information about MCP in Claude Code, see the [official documentation](https://docs.claude.com/en/docs/claude-code/mcp).
+
+---
+
+## HTTP Server — Dynamic Multi-Host
+
+The HTTP server exposes SSH execution over **Streamable HTTP** (`POST /mcp`). Unlike the stdio server, it accepts SSH connection parameters on **every tool call**, so a single running instance (or container) can reach any number of SSH hosts without restart.
+
+This mode is designed for tools like [HolmesGPT](https://github.com/robusta-dev/holmesgpt) that orchestrate investigations across many servers.
+
+### Docker Quick Start
+
+**Pull the image:**
+```bash
+docker pull ghcr.io/tufantunc/ssh-mcp:latest
+```
+
+**Run the container:**
+```bash
+docker run -d \
+  --name ssh-mcp \
+  -p 8080:8080 \
+  ghcr.io/tufantunc/ssh-mcp:latest
+```
+
+**Override the port or timeout:**
+```bash
+docker run -d \
+  --name ssh-mcp \
+  -p 9090:9090 \
+  -e PORT=9090 \
+  -e SSH_TIMEOUT_MS=120000 \
+  ghcr.io/tufantunc/ssh-mcp:latest
+```
+
+**Verify it is running:**
+```bash
+curl http://localhost:8080/health
+# {"status":"ok","service":"ssh-mcp-http","version":"1.5.0"}
+```
+
+### HTTP Tools
+
+Both tools open a **fresh SSH connection per call** and close it immediately after the command completes.
+
+#### `ssh_exec`
+
+Execute a shell command on any SSH server.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `host` | string | yes | SSH server hostname or IP address |
+| `port` | number | no | SSH port (default: `22`) |
+| `user` | string | yes | SSH login username |
+| `password` | string | one of | SSH password |
+| `private_key` | string | one of | PEM-encoded SSH private key — raw text or base64-encoded |
+| `command` | string | yes | Shell command to execute |
+
+#### `ssh_sudo_exec`
+
+Execute a shell command with `sudo` on any SSH server.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `host` | string | yes | SSH server hostname or IP address |
+| `port` | number | no | SSH port (default: `22`) |
+| `user` | string | yes | SSH login username |
+| `password` | string | one of | SSH password |
+| `private_key` | string | one of | PEM-encoded SSH private key — raw text or base64-encoded |
+| `command` | string | yes | Shell command to execute as root |
+| `sudo_password` | string | no | Password for `sudo`. Omit if passwordless sudo is configured. |
+
+> Either `password` or `private_key` must be provided for both tools.
+
+### MCP Client Configuration (HTTP)
+
+Point your MCP client at the running container's `/mcp` endpoint.
+
+**Generic JSON config:**
+```json
+{
+    "mcpServers": {
+        "ssh-mcp-http": {
+            "transport": "http",
+            "url": "http://localhost:8080/mcp"
+        }
+    }
+}
+```
+
+**HolmesGPT (`holmesgpt_config.yaml`):**
+```yaml
+toolsets:
+  - type: mcp
+    name: ssh-mcp-http
+    transport: http
+    url: http://ssh-mcp:8080/mcp
+```
+
+**Claude Code (HTTP transport):**
+```bash
+claude mcp add --transport http ssh-mcp-http http://localhost:8080/mcp
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8080` | TCP port the HTTP server listens on |
+| `SSH_TIMEOUT_MS` | `60000` | SSH command execution timeout in milliseconds |
+
+---
 
 ## Testing
 
