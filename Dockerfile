@@ -4,8 +4,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Install dependencies (including dev deps needed for TypeScript build)
+# --ignore-scripts skips the `prepare` hook so npm doesn't try to compile
+# before the source files are present; we run the build explicitly below
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 # Compile TypeScript → JavaScript
 COPY tsconfig.json ./
@@ -19,7 +21,9 @@ WORKDIR /app
 
 # Copy only production dependencies + compiled output
 COPY package*.json ./
-RUN npm ci --omit=dev
+# --ignore-scripts prevents the `prepare` lifecycle hook (tsc build) from
+# running here — the compiled output is already copied from the builder stage
+RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=builder /app/build ./build
 
