@@ -3,6 +3,7 @@ name: Publish to npm
 on:
   release:
     types: [created]
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -24,6 +25,9 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
+        # continue-on-error so the docker job still runs on forks that
+        # don't have NPM_TOKEN set (e.g. when testing via workflow_dispatch)
+        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
@@ -54,6 +58,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
+            type=sha,prefix=sha-
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
